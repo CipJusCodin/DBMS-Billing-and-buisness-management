@@ -16,6 +16,7 @@ import pandas as pd
 import smtplib
 from email.message import EmailMessage
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import threading
 
 global cam1, cam2
 cam1 = True
@@ -24,15 +25,15 @@ cam2 = False
 global us_bg, us_fg, mid_bg, mid_fg, btn_p_bg, btn_p_fg, btn_s_bg, dk_bg
 us_bg = "#2E2E3A"
 us_fg = "#FFFFFF"
-# mid_bg = "#31FFA1"
+mid_bg = "#31FFA1"
 mid_bg = "#4ADE80"
 mid_fg = "#111827"
-# btn_p_bg = "#4ADE80"
+btn_p_bg = "#4ADE80"
 btn_p_bg = "#55CB83"
 btn_s_bg = "#111827"
-# btn_p_fg = "#111827"
+btn_p_fg = "#111827"
 btn_p_fg = "#2E2E3A"
-# dk_bg = "#1FAD53"
+dk_bg = "#1FAD53"
 dk_bg = "#baffd3"
 
 
@@ -72,7 +73,6 @@ def on_closing_window():
 def billing():
 
     hide_all_frames()
-
     billing_frame.pack(fill=BOTH, expand=1)
     billing_app_page()
 
@@ -398,130 +398,94 @@ def billing_app_page():
     def show_frame():
         _, img = cap.read()
         img = cv2.resize(img, (400, 350))
-        frame = img
-        cv2image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)
+        cv2image = cv2.cvtColor(img, cv2.COLOR_BGR2RGBA)
         hhh = ii.fromarray(cv2image)
         imgtk = ImageTk.PhotoImage(image=hhh)
         lmain.imgtk = imgtk
         lmain.configure(image=imgtk)
         lmain.after(10, show_frame)
 
-        for barcode in decode(img):
-            global mycon, song, master_barcode_list, cur, barcode_all_df, bill_id_new, mstr_df_prd, bill_id_new, bc_list_bill, pid_list_bill, quant_list_bill, name_list_bill, mrp_list_bill, total_list_bill, bc_list_bill_all
+        # Move barcode processing to a separate thread
+        threading.Thread(target=process_barcodes, args=(img,)).start()
 
+    def process_barcodes(img):
+        global mycon, song, master_barcode_list, cur, barcode_all_df, bill_id_new, mstr_df_prd, bill_id_new, bc_list_bill, pid_list_bill, quant_list_bill, name_list_bill, mrp_list_bill, total_list_bill, bc_list_bill_all
+
+        for barcode in decode(img):
             myData = barcode.data.decode('utf-8')
 
             if myData in barcode_all_list:
-
-                one_row_qry = "select `pname`, `mrp`, `barcode`, `pid`,`profit`, `quantity` as 'quant_main' from product where `barcode` = %s;" % (
-                    myData,)
+                one_row_qry = f"SELECT `pname`, `mrp`, `barcode`, `pid`,`profit`, `quantity` AS 'quant_main' FROM product WHERE `barcode` = '{myData}'"
                 temp_df_pro = pd.read_sql(one_row_qry, mycon)
-                temp_df_pro['quantity'] = [int(1)]
-                total_new = int(temp_df_pro['mrp'].to_string(index=False))
-                temp_df_pro['total'] = [total_new]
-
-                total_profit_new = int(
-                    temp_df_pro['profit'].to_string(index=False))
-                temp_df_pro['total_profit'] = [total_profit_new]
+                temp_df_pro['quantity'] = 1
+                total_new = int(temp_df_pro['mrp'].values[0])
+                temp_df_pro['total'] = total_new
+                total_profit_new = int(temp_df_pro['profit'].values[0])
+                temp_df_pro['total_profit'] = total_profit_new
 
                 master_barcode_list = mstr_df_prd['barcode'].tolist()
-                ind_main = mstr_df_prd[mstr_df_prd['barcode']
-                                       == myData].index.values
                 if myData not in master_barcode_list:
                     q_new_temp = 1
                 else:
-                    q_new_temp = int(
-                        float(mstr_df_prd['quantity'].iloc[ind_main].to_string(index=False))) + 1
+                    ind_main = mstr_df_prd[mstr_df_prd['barcode'] == myData].index.values[0]
+                    q_new_temp = mstr_df_prd.at[ind_main, 'quantity'] + 1
 
-                pid_qry_bill = "select `barcode` , `quantity` as 'quant_main' from product;"
+                pid_qry_bill = "SELECT `barcode`, `quantity` AS 'quant_main' FROM product"
                 pid_qry_bill_df = pd.read_sql(pid_qry_bill, mycon)
                 pid_qry_bill_list = pid_qry_bill_df['barcode'].tolist()
                 quant_ind = pid_qry_bill_list.index(myData)
 
                 if myData in master_barcode_list:
-                    if int(float(pid_qry_bill_df['quant_main'].iloc[quant_ind])) - q_new_temp >= 0:
-                        pygame.mixer.init()
-                        pygame.mixer.music.load("scanner_sound.mp3")
-                        pygame.mixer.music.play()
-                        ind_main = mstr_df_prd[mstr_df_prd['barcode']
-                                               == myData].index.values
-                        q_new_temp = int(
-                            float(mstr_df_prd['quantity'].iloc[ind_main].to_string(index=False))) + 1
-                        mstr_df_prd.loc[ind_main, 'quantity'] = q_new_temp
-                        total_new = int(float(mstr_df_prd['quantity'].iloc[ind_main].to_string(
-                            index=False)))*(int(float(mstr_df_prd['mrp'].iloc[ind_main].to_string(index=False))))
-                        mstr_df_prd.loc[ind_main, 'total'] = [total_new]
+                    if pid_qry_bill_df.at[quant_ind, 'quant_main'] - q_new_temp >= 0:
+                        play_sound()
+                        mstr_df_prd.at[ind_main, 'quantity'] = q_new_temp
+                        mstr_df_prd.at[ind_main, 'total'] = q_new_temp * mstr_df_prd.at[ind_main, 'mrp']
+                        mstr_df_prd.at[ind_main, 'total_profit'] = q_new_temp * mstr_df_prd.at[ind_main, 'profit']
 
-                        total_new = int(float(mstr_df_prd['quantity'].iloc[ind_main].to_string(
-                            index=False))) * (int(float(mstr_df_prd['profit'].iloc[ind_main].to_string(index=False))))
-                        mstr_df_prd.loc[ind_main, 'total_profit'] = [total_new]
-                        sac1_e.configure(state="normal")
-                        sac1_e.delete('1.0', END)
-                        sac1_e.insert(
-                            '1.0', mstr_df_prd['pname'].to_string(index=False))
-                        sac1_e.configure(state="disable")
-
-                        sac2_e.configure(state="normal")
-                        sac2_e.delete('1.0', END)
-                        sac2_e.insert(
-                            '1.0', mstr_df_prd['quantity'].to_string(index=False))
-                        sac2_e.configure(state='disable')
-
-                        sac3_e.configure(state="normal")
-                        sac3_e.delete('1.0', END)
-                        sac3_e.insert(
-                            '1.0', mstr_df_prd['mrp'].to_string(index=False))
-                        sac3_e.configure(state="disable")
-
-                        sac4_e.configure(state="normal")
-                        sac4_e.delete('1.0', END)
-                        sac4_e.insert(
-                            '1.0', mstr_df_prd['total'].to_string(index=False))
-                        sac4_e.configure(state='disable')
+                        update_gui(mstr_df_prd.at[ind_main, 'pname'], mstr_df_prd.at[ind_main, 'quantity'],
+                                mstr_df_prd.at[ind_main, 'mrp'], mstr_df_prd.at[ind_main, 'total'])
                     else:
-                        messagebox.showinfo(
-                            "PRODUCT NOT AVAILABLE", "The Quantity of Product is Zero")
-
+                        messagebox.showinfo("PRODUCT NOT AVAILABLE", "The Quantity of Product is Zero")
                 else:
-                    if int(float(temp_df_pro['quant_main'].to_string(index=False))) > 0:
-                        pygame.mixer.init()
-                        pygame.mixer.music.load("scanner_sound.mp3")
-                        pygame.mixer.music.play()
-                        mstr_df_prd = mstr_df_prd.append(
-                            temp_df_pro, ignore_index=True)
-
-                        sac1_e.configure(state="normal")
-                        sac1_e.delete('1.0', END)
-                        sac1_e.insert(
-                            '1.0', mstr_df_prd['pname'].to_string(index=False))
-                        sac1_e.configure(state="disable")
-
-                        sac2_e.configure(state="normal")
-                        sac2_e.delete('1.0', END)
-                        sac2_e.insert(
-                            '1.0', mstr_df_prd['quantity'].to_string(index=False))
-                        sac2_e.configure(state='disable')
-
-                        sac3_e.configure(state="normal")
-                        sac3_e.delete('1.0', END)
-                        sac3_e.insert(
-                            '1.0', mstr_df_prd['mrp'].to_string(index=False))
-                        sac3_e.configure(state="disable")
-
-                        sac4_e.configure(state="normal")
-                        sac4_e.delete('1.0', END)
-                        sac4_e.insert(
-                            '1.0', mstr_df_prd['total'].to_string(index=False))
-                        sac4_e.configure(state='disable')
+                    if temp_df_pro.at[0, 'quant_main'] > 0:
+                        play_sound()
+                        mstr_df_prd = mstr_df_prd.append(temp_df_pro, ignore_index=True)
+                        update_gui(temp_df_pro.at[0, 'pname'], temp_df_pro.at[0, 'quantity'],
+                                temp_df_pro.at[0, 'mrp'], temp_df_pro.at[0, 'total'])
                     else:
-                        messagebox.showinfo(
-                            "PRODUCT NOT AVAILABLE", "The Quantity of Product is Zero")
+                        messagebox.showinfo("PRODUCT NOT AVAILABLE", "The Quantity of Product is Zero")
 
             else:
                 if cnt123 == False:
                     asd123()
 
-            time.sleep(1.2)
+        time.sleep(1.2)
+
+    def play_sound():
+        pygame.mixer.init()
+        pygame.mixer.music.load("scanner_sound.mp3")
+        pygame.mixer.music.play()
+
+    def update_gui(pname, quantity, mrp, total):
+        sac1_e.configure(state="normal")
+        sac1_e.delete('1.0', END)
+        sac1_e.insert('1.0', pname)
+        sac1_e.configure(state="disable")
+
+        sac2_e.configure(state="normal")
+        sac2_e.delete('1.0', END)
+        sac2_e.insert('1.0', quantity)
+        sac2_e.configure(state='disable')
+
+        sac3_e.configure(state="normal")
+        sac3_e.delete('1.0', END)
+        sac3_e.insert('1.0', mrp)
+        sac3_e.configure(state="disable")
+
+        sac4_e.configure(state="normal")
+        sac4_e.delete('1.0', END)
+        sac4_e.insert('1.0', total)
+        sac4_e.configure(state='disable')
 
     def add_product_tobill():
         global mycon, cur, barcode_all_df, master_barcode_list, bill_id_new, mstr_df_prd, bill_id_new, bc_list_bill, pid_list_bill, quant_list_bill, name_list_bill, mrp_list_bill, total_list_bill, bc_list_bill_all, addproduct_e, addquantity_e
@@ -2523,10 +2487,9 @@ def bill_display_analysis():
 
 billing_frame.pack(fill=BOTH, expand=1)
 billing_app_page()
-# running
+
 
 root.protocol("WM_DELETE_WINDOW", on_closing_window)
 root.mainloop()
 
 
-# の実演はすべて終了
