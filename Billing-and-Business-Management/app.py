@@ -1,4 +1,3 @@
-
 from datetime import date
 from tkinter import messagebox
 import matplotlib.pyplot as plt
